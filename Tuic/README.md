@@ -11,4 +11,4 @@
 # [cite_start]🚀 VPS运行以下脚本 
 
 ```bash
-bash <(curl -fsSL [https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Tuic/tuic.sh](https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Tuic/tuic.sh))
+bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Tuic/tuic.sh)
