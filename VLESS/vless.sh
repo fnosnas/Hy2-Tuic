@@ -3,11 +3,14 @@ set -e
 
 ### ===== 配置参数 =====
 TAG="VLESS"
+SERVER_NAME="www.bing.com"
 WORKDIR="/etc/xray"
 BIN="/usr/local/bin/xray"
 CONF="$WORKDIR/config.json"
 PORT_FILE="$WORKDIR/port.txt"
 UUID_FILE="$WORKDIR/uuid.txt"
+CERT="$WORKDIR/cert.pem"
+KEY="$WORKDIR/key.pem"
 ### =====================
 
 GREEN='\e[32m'
@@ -36,7 +39,7 @@ restart_service() {
     fi
 }
 
-# 生成配置文件
+# 生成配置文件（带 TLS）
 write_config() {
     local PORT=$1
     local UUID=$2
@@ -59,7 +62,17 @@ write_config() {
         "decryption": "none"
       },
       "streamSettings": {
-        "network": "tcp"
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "alpn": ["h2", "http/1.1"],
+          "certificates": [
+            {
+              "certificateFile": "$CERT",
+              "keyFile": "$KEY"
+            }
+          ]
+        }
       }
     }
   ],
@@ -83,22 +96,25 @@ show_info() {
     echo -e "${YELLOW}正在检测公网 IP 地址...${NC}"
     IP4=$(curl -s4 --connect-timeout 5 ip.sb || curl -s4 --connect-timeout 5 ifconfig.me || echo "")
     IP6=$(curl -s6 --connect-timeout 5 ip.sb || curl -s6 --connect-timeout 5 ifconfig.me || echo "")
-    echo -e "\n${GREEN}========== VLESS 配置信息 ==========${NC}"
-    echo -e "📌 IPv4地址: ${YELLOW}$IP4${NC}"
-    echo -e "📌 IPv6地址: ${YELLOW}$IP6${NC}"
-    echo -e "🎲 监听端口: ${YELLOW}$PORT${NC}"
-    echo -e "🔑 UUID:     ${YELLOW}$UUID${NC}"
-    echo -e "🔒 加密方式: ${YELLOW}none${NC}"
-    echo -e "🌐 传输协议: ${YELLOW}tcp${NC}"
+    echo -e "\n${GREEN}========== VLESS + TLS 配置信息 ==========${NC}"
+    echo -e "📌 IPv4地址:    ${YELLOW}$IP4${NC}"
+    echo -e "📌 IPv6地址:    ${YELLOW}$IP6${NC}"
+    echo -e "🎲 监听端口:    ${YELLOW}$PORT${NC}"
+    echo -e "🔑 UUID:        ${YELLOW}$UUID${NC}"
+    echo -e "🔒 加密方式:    ${YELLOW}none${NC}"
+    echo -e "🌐 传输协议:    ${YELLOW}tcp${NC}"
+    echo -e "🛡️  传输层安全:  ${YELLOW}TLS (自签证书, allowInsecure=true)${NC}"
+    echo -e "🌍 SNI:         ${YELLOW}$SERVER_NAME${NC}"
     if [[ -n "$IP4" ]]; then
         echo -e "\n${GREEN}📎 节点链接 (IPv4):${NC}"
-        echo -e "${YELLOW}vless://$UUID@$IP4:$PORT?encryption=none&type=tcp#${TAG}_V4${NC}"
+        echo -e "${YELLOW}vless://$UUID@$IP4:$PORT?encryption=none&security=tls&type=tcp&sni=$SERVER_NAME&allowInsecure=1&fp=chrome#${TAG}_V4${NC}"
     fi
     if [[ -n "$IP6" ]]; then
         echo -e "\n${GREEN}📎 节点链接 (IPv6):${NC}"
-        echo -e "${YELLOW}vless://$UUID@[$IP6]:$PORT?encryption=none&type=tcp#${TAG}_V6${NC}"
+        echo -e "${YELLOW}vless://$UUID@[$IP6]:$PORT?encryption=none&security=tls&type=tcp&sni=$SERVER_NAME&allowInsecure=1&fp=chrome#${TAG}_V6${NC}"
     fi
-    echo -e "${GREEN}=====================================${NC}\n"
+    echo -e "${GREEN}===========================================${NC}\n"
+    echo -e "${YELLOW}💡 客户端导入时，TLS 选 tls，跳过证书验证(allowInsecure)打开即可${NC}\n"
 }
 
 # 更改端口
@@ -113,7 +129,7 @@ change_port() {
     write_config "$NEW_PORT" "$UUID"
     command -v ufw >/dev/null 2>&1 && ufw allow "$NEW_PORT"/tcp
     restart_service
-    echo -e "${GREEN}✅ 端口已更改为: $NEW_PORT${NC}"
+    echo -e "${GREEN}✅ 端口已更改${NC}"
     show_info
 }
 
@@ -121,9 +137,9 @@ change_port() {
 install_vless() {
     echo -e "${GREEN}📦 安装依赖...${NC}"
     if [ "$OS" = "alpine" ]; then
-        apk add --no-cache curl ca-certificates bash
+        apk add --no-cache curl ca-certificates bash openssl unzip
     else
-        apt update && apt install -y curl ca-certificates bash
+        apt update && apt install -y curl ca-certificates bash openssl unzip
     fi
 
     mkdir -p "$WORKDIR"
@@ -131,9 +147,9 @@ install_vless() {
     # 识别系统架构
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64)   XRAY_FILE="Xray-linux-64.zip" ;;
+        x86_64)        XRAY_FILE="Xray-linux-64.zip" ;;
         aarch64|arm64) XRAY_FILE="Xray-linux-arm64-v8a.zip" ;;
-        armv7l)   XRAY_FILE="Xray-linux-arm32-v7a.zip" ;;
+        armv7l)        XRAY_FILE="Xray-linux-arm32-v7a.zip" ;;
         *) echo -e "${RED}❌ 不支持的架构: $ARCH${NC}"; exit 1 ;;
     esac
 
@@ -141,17 +157,18 @@ install_vless() {
     XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/$XRAY_FILE"
     TMP_DIR=$(mktemp -d)
     curl -L -o "$TMP_DIR/xray.zip" "$XRAY_URL"
-
-    # 解压（alpine 用 unzip，需先安装）
-    if [ "$OS" = "alpine" ]; then
-        apk add --no-cache unzip
-    else
-        apt install -y unzip
-    fi
     unzip -o "$TMP_DIR/xray.zip" xray -d "$TMP_DIR/"
     mv "$TMP_DIR/xray" "$BIN"
     chmod +x "$BIN"
     rm -rf "$TMP_DIR"
+
+    # 生成自签 TLS 证书（有效期 10 年）
+    echo -e "${GREEN}🔐 生成自签 TLS 证书...${NC}"
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$KEY" \
+        -out "$CERT" \
+        -days 3650 \
+        -subj "/CN=$SERVER_NAME"
 
     # 生成 UUID 和端口
     UUID=$("$BIN" uuid)
@@ -182,7 +199,7 @@ EOF
     else
         cat > /etc/systemd/system/xray.service <<EOF
 [Unit]
-Description=Xray VLESS Service
+Description=Xray VLESS+TLS Service
 After=network.target
 
 [Service]
@@ -221,8 +238,8 @@ uninstall_vless() {
 
 # 菜单
 clear
-echo -e "${GREEN}===== VLESS 管理脚本 (by Xray-core) =====${NC}"
-echo "1. 安装 VLESS"
+echo -e "${GREEN}===== VLESS + TLS 管理脚本 (Xray-core) =====${NC}"
+echo "1. 安装 VLESS+TLS"
 echo "2. 查看信息 / 节点链接"
 echo "3. 更改端口"
 echo "4. 卸载"
