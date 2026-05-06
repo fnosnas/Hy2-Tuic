@@ -13,5 +13,10 @@
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/hy2.sh)
 ```
+Socks5
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Socks5.sh)
+```
+http无认证
+```
+bash <(curl -sL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/http_proxy.sh)
