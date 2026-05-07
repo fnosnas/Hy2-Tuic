@@ -1,4 +1,3 @@
-cat > ~/http_proxy.sh <<'EOF'
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
@@ -33,11 +32,6 @@ err() {
     echo -e "${RED}$*${NC}"
 }
 
-pause() {
-    echo
-    read -rp "按回车键继续..." _
-}
-
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         err "❌ 请使用 root 用户运行"
@@ -49,7 +43,7 @@ detect_os() {
     if command -v apt-get >/dev/null 2>&1; then
         OS="debian"
     else
-        err "❌ 当前脚本仅支持 Debian/Ubuntu 系统"
+        err "❌ 当前 HTTP 代理脚本仅支持 Debian/Ubuntu"
         exit 1
     fi
 }
@@ -68,7 +62,7 @@ valid_port() {
 }
 
 install_dependencies() {
-    msg "📦 正在自动安装 Tinyproxy 和依赖..."
+    msg "📦 正在安装 Tinyproxy 和依赖..."
 
     apt-get update -y
     apt-get install -y \
@@ -92,22 +86,19 @@ allow_firewall_port() {
     fi
 }
 
-backup_config() {
-    mkdir -p "$WORKDIR"
-
-    if [ -f "$CONF" ] && [ ! -f "$CONF.bak" ]; then
-        cp -a "$CONF" "$CONF.bak"
-    fi
-}
-
 write_config() {
     local port="$1"
 
     mkdir -p "$WORKDIR"
+    mkdir -p /var/log/tinyproxy
 
-    cat > "$CONF" <<EOF2
+    if [ -f "$CONF" ] && [ ! -f "$CONF.bak" ]; then
+        cp -a "$CONF" "$CONF.bak" || true
+    fi
+
+    cat > "$CONF" <<EOF
 # Tinyproxy HTTP 无认证代理配置
-# 由管理脚本自动生成
+# 由一键脚本自动生成
 
 User tinyproxy
 Group tinyproxy
@@ -135,9 +126,9 @@ ViaProxyName "tinyproxy"
 ConnectPort 443
 ConnectPort 563
 
-# 无认证、无限制来源
-# 注意：这里没有 Allow 限制，代表允许任意来源连接。
-EOF2
+# 无认证、开放来源
+# 不写 Allow 即允许所有来源访问
+EOF
 
     echo "$port" > "$PORT_FILE"
 }
@@ -191,7 +182,7 @@ check_listen_port() {
 show_info() {
     if [ ! -f "$CONF" ] || [ ! -f "$PORT_FILE" ]; then
         warn "⚠️ 尚未安装或配置 HTTP 代理"
-        return
+        return 1
     fi
 
     local port
@@ -233,20 +224,18 @@ show_info() {
     fi
 
     echo
-    warn "⚠️ 如果你是 NAT VPS，请确认该端口已在商家面板映射/放行。"
+    warn "⚠️ 如果是 NAT VPS，请确认该端口已在商家面板映射/放行。"
     warn "⚠️ 当前为无认证开放代理，请勿长期公网裸奔使用。"
     echo
 }
 
 install_proxy() {
-    clear
     msg "🚀 开始一键安装 HTTP 无认证代理..."
 
     local port
     port="$(random_port)"
 
     install_dependencies
-    backup_config
     write_config "$port"
     allow_firewall_port "$port"
 
@@ -261,7 +250,36 @@ install_proxy() {
     show_info
 }
 
-change_port() {
+change_port_auto() {
+    local new_port="$1"
+
+    if ! valid_port "$new_port"; then
+        err "❌ 端口无效，请输入 1-65535 之间的数字"
+        exit 1
+    fi
+
+    if [ ! -f "$CONF" ]; then
+        err "❌ 尚未安装 HTTP 代理，请先安装"
+        exit 1
+    fi
+
+    sed -i "s/^[[:space:]]*Port[[:space:]].*/Port ${new_port}/g" "$CONF"
+    echo "$new_port" > "$PORT_FILE"
+
+    allow_firewall_port "$new_port"
+
+    if restart_service; then
+        msg "✅ 端口已更改为 ${new_port}"
+    else
+        err "❌ 服务重启失败，最近日志如下："
+        journalctl -u "$SERVICE_NAME" --no-pager -n 80 || true
+        exit 1
+    fi
+
+    show_info
+}
+
+change_port_menu() {
     if [ ! -f "$CONF" ] || [ ! -f "$PORT_FILE" ]; then
         warn "⚠️ 尚未安装 HTTP 代理"
         return
@@ -284,13 +302,9 @@ change_port() {
         return
     fi
 
-    if grep -qE '^[[:space:]]*Port[[:space:]]+' "$CONF"; then
-        sed -i "s/^[[:space:]]*Port[[:space:]].*/Port ${new_port}/g" "$CONF"
-    else
-        echo "Port ${new_port}" >> "$CONF"
-    fi
-
+    sed -i "s/^[[:space:]]*Port[[:space:]].*/Port ${new_port}/g" "$CONF"
     echo "$new_port" > "$PORT_FILE"
+
     allow_firewall_port "$new_port"
 
     if restart_service; then
@@ -305,14 +319,7 @@ change_port() {
 }
 
 uninstall_proxy() {
-    echo
-    warn "⚠️ 即将卸载 Tinyproxy HTTP 代理"
-    read -rp "确认卸载？输入 y 确认: " confirm
-
-    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-        warn "已取消卸载"
-        return
-    fi
+    msg "🧹 正在卸载 Tinyproxy HTTP 代理..."
 
     stop_service
     disable_service
@@ -324,6 +331,11 @@ uninstall_proxy() {
     rm -rf /var/log/tinyproxy
 
     msg "✅ 卸载完成"
+}
+
+menu_pause() {
+    echo
+    read -rp "按回车键继续..." _
 }
 
 main_menu() {
@@ -343,19 +355,25 @@ main_menu() {
         case "$choice" in
             1)
                 install_proxy
-                pause
+                menu_pause
                 ;;
             2)
-                show_info
-                pause
+                show_info || true
+                menu_pause
                 ;;
             3)
-                change_port
-                pause
+                change_port_menu
+                menu_pause
                 ;;
             4)
-                uninstall_proxy
-                pause
+                echo
+                read -rp "确认卸载？输入 y 确认: " confirm
+                if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+                    uninstall_proxy
+                else
+                    warn "已取消卸载"
+                fi
+                menu_pause
                 ;;
             0)
                 exit 0
@@ -370,7 +388,39 @@ main_menu() {
 
 check_root
 detect_os
-main_menu
-EOF
 
-chmod +x ~/http_proxy.sh
+ACTION="${1:-install}"
+
+case "$ACTION" in
+    install)
+        install_proxy
+        ;;
+    menu)
+        main_menu
+        ;;
+    info)
+        show_info
+        ;;
+    port)
+        if [ -z "${2:-}" ]; then
+            err "❌ 用法: bash http.sh port 端口号"
+            exit 1
+        fi
+        change_port_auto "$2"
+        ;;
+    uninstall)
+        uninstall_proxy
+        ;;
+    *)
+        err "❌ 未知参数: $ACTION"
+        echo "用法:"
+        echo "  bash http.sh              # 一键安装"
+        echo "  bash http.sh install      # 一键安装"
+        echo "  bash http.sh menu         # 打开菜单"
+        echo "  bash http.sh info         # 查看信息"
+        echo "  bash http.sh port 12345   # 更改端口"
+        echo "  bash http.sh uninstall    # 卸载"
+        exit 1
+        ;;
+esac
+EOF
