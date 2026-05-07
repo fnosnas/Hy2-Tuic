@@ -85,15 +85,48 @@ get_bin_path() {
     echo "$BIN"
 }
 
+fix_locale_warning() {
+    # 解决部分 Debian VPS 出现的 locale 警告，不影响主流程
+    if [ "$OS" = "debian" ]; then
+        if ! locale -a 2>/dev/null | grep -qi "C.UTF-8"; then
+            return
+        fi
+
+        export LANG=C.UTF-8
+        export LC_ALL=C.UTF-8
+    fi
+}
+
 install_dependencies() {
     msg "📦 正在安装依赖..."
 
     if [ "$OS" = "alpine" ]; then
         apk update
-        apk add --no-cache bash curl git make gcc musl-dev build-base openrc
+        apk add --no-cache \
+            bash \
+            curl \
+            git \
+            make \
+            gcc \
+            musl-dev \
+            build-base \
+            openssl-dev \
+            zlib-dev \
+            pkgconf \
+            openrc
     else
         apt update
-        apt install -y curl bash git make gcc build-essential ca-certificates
+        apt install -y \
+            curl \
+            bash \
+            git \
+            make \
+            gcc \
+            build-essential \
+            ca-certificates \
+            libssl-dev \
+            zlib1g-dev \
+            pkg-config
     fi
 }
 
@@ -126,7 +159,14 @@ install_3proxy_by_source() {
     cd "$SRC_DIR"
 
     ln -sf Makefile.Linux Makefile
-    make
+
+    make clean >/dev/null 2>&1 || true
+
+    if ! make; then
+        err "❌ 3proxy 源码编译失败"
+        err "请检查是否缺少依赖，尤其是 libssl-dev / openssl-dev"
+        exit 1
+    fi
 
     mkdir -p /usr/local/bin
 
@@ -139,13 +179,18 @@ install_3proxy_by_source() {
         exit 1
     fi
 
+    if [ ! -x "$BIN" ]; then
+        err "❌ 3proxy 安装失败：$BIN 不存在或不可执行"
+        exit 1
+    fi
+
     msg "✅ 源码编译安装完成：$BIN"
 }
 
 install_3proxy() {
     if command -v 3proxy >/dev/null 2>&1 || [ -x "$BIN" ]; then
-        msg "✅ 检测到 3proxy 已安装"
         BIN="$(get_bin_path)"
+        msg "✅ 检测到 3proxy 已安装：$BIN"
         return
     fi
 
@@ -249,7 +294,7 @@ EOF
 
 restart_service() {
     if [ "$OS" = "alpine" ]; then
-        rc-service 3proxy restart || rc-service 3proxy start
+        rc-service 3proxy restart >/dev/null 2>&1 || rc-service 3proxy start
     else
         systemctl daemon-reload
         systemctl restart 3proxy
@@ -277,9 +322,17 @@ disable_service() {
 
 service_status() {
     if [ "$OS" = "alpine" ]; then
-        rc-service 3proxy status >/dev/null 2>&1 && echo "运行中" || echo "未运行"
+        if rc-service 3proxy status >/dev/null 2>&1; then
+            echo "运行中"
+        else
+            echo "未运行"
+        fi
     else
-        systemctl is-active --quiet 3proxy && echo "运行中" || echo "未运行"
+        if systemctl is-active --quiet 3proxy; then
+            echo "运行中"
+        else
+            echo "未运行"
+        fi
     fi
 }
 
@@ -297,6 +350,18 @@ get_ipv6() {
         || true
 }
 
+check_listen_port() {
+    local port="$1"
+
+    if command -v ss >/dev/null 2>&1; then
+        ss -lntp 2>/dev/null | grep -q ":$port "
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -lntp 2>/dev/null | grep -q ":$port "
+    else
+        return 0
+    fi
+}
+
 show_info() {
     if [ ! -f "$CONF" ] || [ ! -f "$PORT_FILE" ]; then
         warn "⚠️ 尚未安装或配置 HTTP 代理"
@@ -307,11 +372,13 @@ show_info() {
     local ip4
     local ip6
     local status
+    local bin_path
 
     port="$(cat "$PORT_FILE")"
     ip4="$(get_ipv4)"
     ip6="$(get_ipv6)"
     status="$(service_status)"
+    bin_path="$(get_bin_path)"
 
     echo
     echo -e "${BLUE}========== HTTP 代理配置信息 ==========${NC}"
@@ -319,7 +386,13 @@ show_info() {
     echo -e "🎲 监听端口: ${GREEN}${port}${NC}"
     echo -e "🔓 认证方式: ${YELLOW}无认证${NC}"
     echo -e "📄 配置文件: ${CONF}"
-    echo -e "⚙️ 程序路径: $(get_bin_path)"
+    echo -e "⚙️ 程序路径: ${bin_path}"
+
+    if check_listen_port "$port"; then
+        echo -e "👂 端口监听: ${GREEN}正常${NC}"
+    else
+        echo -e "👂 端口监听: ${RED}未检测到，请检查服务状态${NC}"
+    fi
 
     if [ -n "$ip4" ]; then
         echo
@@ -336,7 +409,7 @@ show_info() {
     fi
 
     echo
-    warn "⚠️ 如果你是 NAT VPS，请确认该端口已经在商家面板映射/放行。"
+    warn "⚠️ 如果你是 NAT VPS，请确认该端口已在商家面板映射/放行。"
     warn "⚠️ 当前为无认证代理，请勿长期公网裸奔使用。"
     echo
 }
@@ -362,9 +435,17 @@ install_proxy() {
     create_config "$port"
     create_service
     allow_firewall_port "$port"
-    restart_service
 
-    msg "✅ HTTP 代理安装完成"
+    if restart_service; then
+        msg "✅ HTTP 代理安装完成"
+    else
+        err "❌ 服务启动失败，请查看日志："
+        if [ "$OS" = "debian" ]; then
+            journalctl -u 3proxy --no-pager -n 50
+        fi
+        exit 1
+    fi
+
     show_info
 }
 
@@ -391,18 +472,21 @@ change_port() {
         return
     fi
 
-    sed -i "s/proxy -n -a -p${old_port}/proxy -n -a -p${new_port}/g" "$CONF"
-
-    if ! grep -q "proxy -n -a -p${new_port}" "$CONF"; then
-        sed -i "s/^proxy .*/proxy -n -a -p${new_port}/g" "$CONF"
-    fi
-
+    sed -i "s/^proxy .*/proxy -n -a -p${new_port}/g" "$CONF"
     echo "$new_port" > "$PORT_FILE"
 
     allow_firewall_port "$new_port"
-    restart_service
 
-    msg "✅ 端口已从 ${old_port} 更改为 ${new_port}"
+    if restart_service; then
+        msg "✅ 端口已从 ${old_port} 更改为 ${new_port}"
+    else
+        err "❌ 服务重启失败，请查看日志："
+        if [ "$OS" = "debian" ]; then
+            journalctl -u 3proxy --no-pager -n 50
+        fi
+        return
+    fi
+
     show_info
 }
 
@@ -484,4 +568,5 @@ main_menu() {
 
 check_root
 detect_os
+fix_locale_warning
 main_menu
