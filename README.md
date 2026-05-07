@@ -19,4 +19,4 @@ bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Socks5
 ```
 http无认证
 ```
-bash <(curl -sL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/http_proxy.sh)
+bash <(curl -sL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/http.sh)
