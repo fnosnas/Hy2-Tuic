@@ -4,11 +4,10 @@ set -e
 ### ===== 配置参数 =====
 WORK_DIR="/usr/local/tuic"
 BIN="${WORK_DIR}/tuic-server"
-CONF="${WORK_DIR}/config.json"        # 1.0.0 用 JSON 格式
+CONF="${WORK_DIR}/config.yaml"
 SERVICE_NAME="tuic"
-TUIC_VERSION="tuic-server-1.0.0"
-TUIC_REPO="EAimTY/tuic"
-TUIC_LIBC="unknown-linux-gnu"         # musl 版有 os error 92 bug
+# Itsusinn fork，活跃维护，YAML 配置，支持 dual_stack 开关
+TUIC_REPO="Itsusinn/tuic"
 ### =====================
 
 GREEN='\033[32m'
@@ -36,37 +35,22 @@ restart_service() {
     fi
 }
 
-# 确保 IPv6 socket 层可用（tuic 1.0.0 gnu 版需要）
-ensure_ipv6() {
+# 检测 IPv6 是否可用
+ipv6_available() {
     local disabled
-    disabled=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo "0")
-    if [ "$disabled" = "1" ]; then
-        echo -e "${YELLOW}⚠️  IPv6 内核级别被禁用，正在临时开启（仅 socket 层）...${NC}"
-        sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
-        sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
-        sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
-        echo -e "${GREEN}✅ IPv6 socket 已开启${NC}"
-    fi
+    disabled=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo "1")
+    [ "$disabled" = "0" ] && return 0
+    return 1
 }
 
-# 从 JSON 配置读取字段
-get_conf_field() {
-    if [ ! -f "$CONF" ]; then echo ""; return; fi
-    case "$1" in
-        port)     grep '"server"' "$CONF" | grep -oE '[0-9]{2,5}' | tail -1 ;;
-        uuid)     grep -A1 '"users"' "$CONF" | grep -oE '"[0-9a-f-]{36}"' | tr -d '"' ;;
-        password) grep -A1 '"users"' "$CONF" | grep -oE '": "[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"' ;;
-    esac
-}
-
-# 显示配置信息
+# 获取并显示信息
 show_info() {
     if [ ! -f "$CONF" ]; then
         echo -e "${RED}❌ TUIC 未安装或配置文件不存在${NC}"; return
     fi
-    PORT=$(get_conf_field port)
-    UUID=$(get_conf_field uuid)
-    PASS=$(get_conf_field password)
+    PORT=$(grep "server:" "$CONF" | grep -oE '[0-9]{4,5}' | head -1)
+    UUID=$(grep -A 1 "users:" "$CONF" | tail -n 1 | awk -F'"' '{print $2}')
+    PASS=$(grep -A 1 "users:" "$CONF" | tail -n 1 | awk -F'"' '{print $4}')
     echo -e "${YELLOW}正在检测公网 IP 地址...${NC}"
     IP4=$(curl -s4 --connect-timeout 5 ip.sb 2>/dev/null || curl -s4 --connect-timeout 5 ifconfig.me 2>/dev/null || echo "")
     IP6=$(curl -s6 --connect-timeout 5 ip.sb 2>/dev/null || curl -s6 --connect-timeout 5 ifconfig.me 2>/dev/null || echo "")
@@ -94,7 +78,7 @@ change_port() {
     fi
     read -p "请输入新端口 (10000-65535，回车随机): " NEW_PORT
     [[ -z "$NEW_PORT" ]] && NEW_PORT=$(( ( RANDOM % 50000 ) + 10000 ))
-    sed -i "s/\"server\": \"[^\"]*\"/\"server\": \"0.0.0.0:${NEW_PORT}\"/" "$CONF"
+    sed -i "s/\(server:.*:\)[0-9]\{1,5\}\"/\1${NEW_PORT}\"/" "$CONF"
     restart_service
     show_info
 }
@@ -103,9 +87,9 @@ change_port() {
 install_tuic() {
     # 安装依赖
     if [ "$OS" = "alpine" ]; then
-        apk add --no-cache curl openssl bash openrc iproute2
+        apk add --no-cache curl openssl bash openrc
     else
-        apt update -y && apt install -y curl openssl iproute2
+        apt update -y && apt install -y curl openssl
     fi
 
     # 架构判断
@@ -116,17 +100,27 @@ install_tuic() {
         *) echo -e "${RED}❌ 不支持的架构: $ARCH${NC}"; exit 1 ;;
     esac
 
-    mkdir -p $WORK_DIR
+    mkdir -p "$WORK_DIR"
 
-    # 下载 tuic-server 1.0.0
-    echo -e "${YELLOW}正在下载 tuic-server ${TUIC_VERSION}...${NC}"
+    # 获取最新版本号
+    echo -e "${YELLOW}正在获取最新版本...${NC}"
+    LATEST=$(curl -s "https://api.github.com/repos/${TUIC_REPO}/releases/latest" \
+        | grep '"tag_name"' | cut -d'"' -f4)
+    if [ -z "$LATEST" ]; then
+        LATEST="v1.8.1"
+        echo -e "${YELLOW}⚠️  无法获取最新版本，使用 $LATEST${NC}"
+    fi
+    echo -e "${GREEN}版本: $LATEST${NC}"
+
+    # 下载二进制
+    echo -e "${YELLOW}正在下载 tuic-server ${LATEST}...${NC}"
     curl -L --retry 3 -o "$BIN" \
-        "https://github.com/${TUIC_REPO}/releases/download/${TUIC_VERSION}/${TUIC_VERSION}-${TUIC_ARCH}-${TUIC_LIBC}"
+        "https://github.com/${TUIC_REPO}/releases/download/${LATEST}/tuic-server-${TUIC_ARCH}-linux-musl"
     chmod +x "$BIN"
 
-    # 验证二进制可执行
+    # 验证
     if ! "$BIN" --version >/dev/null 2>&1; then
-        echo -e "${RED}❌ 二进制文件下载失败或不可执行（大小: $(wc -c < "$BIN") bytes）${NC}"
+        echo -e "${RED}❌ 二进制文件不可执行（大小: $(wc -c < "$BIN") bytes）${NC}"
         exit 1
     fi
 
@@ -134,27 +128,31 @@ install_tuic() {
     UUID=$(cat /proc/sys/kernel/random/uuid)
     PASS=$(openssl rand -hex 4)
 
-    # 确保 IPv6 socket 可用
-    ensure_ipv6
+    # 根据 IPv6 可用性决定 dual_stack
+    if ipv6_available; then
+        DUAL_STACK="true"
+        LISTEN="[::]:${PORT}"
+        echo -e "${GREEN}✅ IPv6 可用，启用双栈监听${NC}"
+    else
+        DUAL_STACK="false"
+        LISTEN="0.0.0.0:${PORT}"
+        echo -e "${YELLOW}⚠️  IPv6 不可用，使用纯 IPv4 监听${NC}"
+    fi
 
-    # 生成 JSON 配置（1.0.0 版本格式）
+    # 生成 YAML 配置（Itsusinn fork 格式）
     cat > "$CONF" <<EOF
-{
-    "server": "0.0.0.0:${PORT}",
-    "users": {
-        "${UUID}": "${PASS}"
-    },
-    "certificate": "${WORK_DIR}/cert.pem",
-    "private_key": "${WORK_DIR}/key.pem",
-    "congestion_control": "bbr",
-    "alpn": ["h3"],
-    "auth_timeout": "3s",
-    "max_idle_time": "30s",
-    "max_external_packet_size": 1500,
-    "gc_interval": "3s",
-    "gc_lifetime": "15s",
-    "log_level": "warn"
-}
+server: "${LISTEN}"
+users:
+  "${UUID}": "${PASS}"
+congestion_control: "bbr"
+auth_timeout: "3s"
+zero_rtt_handshake: false
+dual_stack: ${DUAL_STACK}
+tls:
+  certificate: "${WORK_DIR}/cert.pem"
+  private_key: "${WORK_DIR}/key.pem"
+  alpn:
+    - "h3"
 EOF
 
     # 生成自签证书
@@ -165,7 +163,7 @@ EOF
         -subj "/CN=www.bing.com" \
         -days 3650 -nodes 2>/dev/null
 
-    # 注册系统服务
+    # 注册服务
     if command -v systemctl >/dev/null 2>&1; then
         cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
