@@ -6,9 +6,9 @@ WORK_DIR="/usr/local/tuic"
 BIN="${WORK_DIR}/tuic-server"
 CONF="${WORK_DIR}/config.yaml"
 SERVICE_NAME="tuic"
-# 使用 EAimTY 原版 1.0.0，无强制双栈问题
 TUIC_VERSION="tuic-server-1.0.0"
 TUIC_REPO="EAimTY/tuic"
+TUIC_LIBC="unknown-linux-gnu"   # musl 版本有 os error 92 bug，改用 gnu
 ### =====================
 
 GREEN='\033[32m'
@@ -36,18 +36,23 @@ restart_service() {
     fi
 }
 
-# 检测 IPv6 是否可用
-check_ipv6() {
-    # 检查内核是否禁用 IPv6
-    if [ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 ]; then
-        IPV6_DISABLED=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)
-        [ "$IPV6_DISABLED" = "1" ] && return 1
+# 强制开启 IPv6（tuic 1.0.0 必须有 IPv6 才能启动）
+enable_ipv6() {
+    local disabled
+    disabled=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo "0")
+    if [ "$disabled" = "1" ]; then
+        echo -e "${YELLOW}⚠️  检测到 IPv6 已禁用，正在开启...${NC}"
+        sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null
+        sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null
+        sysctl -w net.ipv6.conf.lo.disable_ipv6=0 >/dev/null
+        # 永久生效
+        sed -i '/net.ipv6.conf.*disable_ipv6/d' /etc/sysctl.conf
+        echo "net.ipv6.conf.all.disable_ipv6=0" >> /etc/sysctl.conf
+        echo "net.ipv6.conf.default.disable_ipv6=0" >> /etc/sysctl.conf
+        echo -e "${GREEN}✅ IPv6 已开启${NC}"
+    else
+        echo -e "${GREEN}✅ IPv6 状态正常${NC}"
     fi
-    # 检查是否有 IPv6 地址
-    if ip -6 addr show scope global 2>/dev/null | grep -q "inet6"; then
-        return 0
-    fi
-    return 1
 }
 
 # 获取并显示信息
@@ -114,7 +119,7 @@ install_tuic() {
     # 下载 tuic-server 1.0.0（EAimTY 原版，兼容性最佳）
     echo -e "${YELLOW}正在下载 tuic-server ${TUIC_VERSION}...${NC}"
     curl -L --retry 3 -o $BIN \
-        "https://github.com/${TUIC_REPO}/releases/download/${TUIC_VERSION}/${TUIC_VERSION}-${TUIC_ARCH}-linux-musl"
+        "https://github.com/${TUIC_REPO}/releases/download/${TUIC_VERSION}/${TUIC_VERSION}-${TUIC_ARCH}-${TUIC_LIBC}"
     chmod +x $BIN
 
     # 验证二进制
