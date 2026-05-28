@@ -1,13 +1,5 @@
 # Hysteria2 一键脚本, 小内存专用，可更改端口，自动保活
 
-支持系统： 
-
-* Alpine / Debian / Ubuntu 
-
-支持架构： 
-
-* x86_64 / ARM64 
-
 # 🚀 VPS运行以下脚本   
 VLESS
 ```
