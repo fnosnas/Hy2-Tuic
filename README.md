@@ -8,8 +8,12 @@
 
 * x86_64 / ARM64 
 
-# 🚀 VPS运行以下脚本 
-
+# 🚀 VPS运行以下脚本   
+VLESS
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/VLESS/vless.sh)
+```
+HY2
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/hy2.sh)
 ```
