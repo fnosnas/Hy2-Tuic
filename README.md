@@ -1,7 +1,11 @@
 #  一键脚本, 小内存专用，可更改端口，自动保活
 
-# 🚀 VPS运行以下脚本   
-VLESS
+# 🚀 VPS运行以下脚本  
+tuic
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Tuic/tuic.sh)
+```
+VLESS 直连
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/VLESS/vless.sh)
 ```
