@@ -1,6 +1,10 @@
 #  一键脚本, 小内存专用，可更改端口，自动保活
 
 # 🚀 VPS运行以下脚本  
+argo
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/argo.sh)
+```
 tuic
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Tuic/tuic.sh)
