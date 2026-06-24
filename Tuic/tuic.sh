@@ -5,8 +5,8 @@ set -e
 WORK_DIR="/usr/local/tuic"
 BIN="${WORK_DIR}/tuic-server"
 CONF="${WORK_DIR}/config.yaml"
+SHA256_FILE="${WORK_DIR}/sha256.txt"
 SERVICE_NAME="tuic"
-# Itsusinn fork，活跃维护，YAML 配置，支持 dual_stack 开关
 TUIC_REPO="Itsusinn/tuic"
 ### =====================
 
@@ -51,22 +51,33 @@ show_info() {
     PORT=$(grep "server:" "$CONF" | grep -oE '[0-9]{4,5}' | head -1)
     UUID=$(grep -A 1 "users:" "$CONF" | tail -n 1 | awk -F'"' '{print $2}')
     PASS=$(grep -A 1 "users:" "$CONF" | tail -n 1 | awk -F'"' '{print $4}')
+    SHA256=""
+    [ -f "$SHA256_FILE" ] && SHA256=$(cat "$SHA256_FILE")
     echo -e "${YELLOW}正在检测公网 IP 地址...${NC}"
     IP4=$(curl -s4 --connect-timeout 5 ip.sb 2>/dev/null || curl -s4 --connect-timeout 5 ifconfig.me 2>/dev/null || echo "")
     IP6=$(curl -s6 --connect-timeout 5 ip.sb 2>/dev/null || curl -s6 --connect-timeout 5 ifconfig.me 2>/dev/null || echo "")
     echo -e "\n${GREEN}========== TUIC 配置信息 ==========${NC}"
-    echo -e "🌐 IPv4地址: ${YELLOW}${IP4:-不可用}${NC}"
-    echo -e "🌐 IPv6地址: ${YELLOW}${IP6:-不可用}${NC}"
-    echo -e "📌 UUID:     ${YELLOW}$UUID${NC}"
-    echo -e "🔐 密码:     ${YELLOW}$PASS${NC}"
-    echo -e "🎲 端口:     ${YELLOW}$PORT${NC}"
+    echo -e "🌐 IPv4地址:   ${YELLOW}${IP4:-不可用}${NC}"
+    echo -e "🌐 IPv6地址:   ${YELLOW}${IP6:-不可用}${NC}"
+    echo -e "📌 UUID:       ${YELLOW}$UUID${NC}"
+    echo -e "🔐 密码:       ${YELLOW}$PASS${NC}"
+    echo -e "🎲 端口:       ${YELLOW}$PORT${NC}"
+    [ -n "$SHA256" ] && echo -e "🔏 证书SHA256: ${YELLOW}$SHA256${NC}"
     if [[ -n "$IP4" ]]; then
-        echo -e "\n${GREEN}📎 TUIC 节点链接 (IPv4):${NC}"
+        echo -e "\n${GREEN}📎 TUIC 节点链接 IPv4 (跳过验证):${NC}"
         echo -e "${YELLOW}tuic://$UUID:$PASS@$IP4:$PORT?congestion_control=bbr&alpn=h3&insecure=1&sni=www.bing.com#TUIC_V4${NC}"
+        if [[ -n "$SHA256" ]]; then
+            echo -e "${GREEN}📎 TUIC 节点链接 IPv4 (SHA256校验):${NC}"
+            echo -e "${YELLOW}tuic://$UUID:$PASS@$IP4:$PORT?congestion_control=bbr&alpn=h3&pinSHA256=$SHA256&sni=www.bing.com#TUIC_V4_SHA256${NC}"
+        fi
     fi
     if [[ -n "$IP6" ]]; then
-        echo -e "\n${GREEN}📎 TUIC 节点链接 (IPv6):${NC}"
+        echo -e "\n${GREEN}📎 TUIC 节点链接 IPv6 (跳过验证):${NC}"
         echo -e "${YELLOW}tuic://$UUID:$PASS@[$IP6]:$PORT?congestion_control=bbr&alpn=h3&insecure=1&sni=www.bing.com#TUIC_V6${NC}"
+        if [[ -n "$SHA256" ]]; then
+            echo -e "${GREEN}📎 TUIC 节点链接 IPv6 (SHA256校验):${NC}"
+            echo -e "${YELLOW}tuic://$UUID:$PASS@[$IP6]:$PORT?congestion_control=bbr&alpn=h3&pinSHA256=$SHA256&sni=www.bing.com#TUIC_V6_SHA256${NC}"
+        fi
     fi
     echo -e "${GREEN}=======================================${NC}\n"
 }
@@ -95,7 +106,7 @@ install_tuic() {
     # 架构判断
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64)        TUIC_ARCH="x86_64" ;;
+        x86_64)        TUIC_ARCH="x86_64"  ;;
         aarch64|arm64) TUIC_ARCH="aarch64" ;;
         *) echo -e "${RED}❌ 不支持的架构: $ARCH${NC}"; exit 1 ;;
     esac
@@ -139,59 +150,64 @@ install_tuic() {
         echo -e "${YELLOW}⚠️  IPv6 不可用，使用纯 IPv4 监听${NC}"
     fi
 
-    # 生成 YAML 配置（Itsusinn fork 格式）
-    cat > "$CONF" <<EOF
-server: "${LISTEN}"
-users:
-  "${UUID}": "${PASS}"
-congestion_control: "bbr"
-auth_timeout: "3s"
-zero_rtt_handshake: false
-dual_stack: ${DUAL_STACK}
-tls:
-  certificate: "${WORK_DIR}/cert.pem"
-  private_key: "${WORK_DIR}/key.pem"
-  alpn:
-    - "h3"
-EOF
-
     # 生成自签证书
     openssl req -x509 -newkey ec \
         -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout "${WORK_DIR}/key.pem" \
-        -out "${WORK_DIR}/cert.pem" \
+        -out    "${WORK_DIR}/cert.pem" \
         -subj "/CN=www.bing.com" \
         -days 3650 -nodes 2>/dev/null
 
+    # 提取 SHA256 指纹（去冒号、转小写）
+    SHA256=$(openssl x509 -noout -fingerprint -sha256 -in "${WORK_DIR}/cert.pem" 2>/dev/null \
+             | sed 's/.*=//;s/://g' | tr '[:upper:]' '[:lower:]')
+    echo "$SHA256" > "$SHA256_FILE"
+
+    # 生成 YAML 配置
+    {
+        echo "server: \"${LISTEN}\""
+        echo "users:"
+        echo "  \"${UUID}\": \"${PASS}\""
+        echo "congestion_control: \"bbr\""
+        echo "auth_timeout: \"3s\""
+        echo "zero_rtt_handshake: false"
+        echo "dual_stack: ${DUAL_STACK}"
+        echo "tls:"
+        echo "  certificate: \"${WORK_DIR}/cert.pem\""
+        echo "  private_key: \"${WORK_DIR}/key.pem\""
+        echo "  alpn:"
+        echo "    - \"h3\""
+    } > "$CONF"
+
     # 注册服务
     if command -v systemctl >/dev/null 2>&1; then
-        cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
-[Unit]
-Description=TUIC Server
-After=network.target
-
-[Service]
-ExecStart=${BIN} -c ${CONF}
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-EOF
+        {
+            echo "[Unit]"
+            echo "Description=TUIC Server"
+            echo "After=network.target"
+            echo ""
+            echo "[Service]"
+            echo "ExecStart=${BIN} -c ${CONF}"
+            echo "Restart=on-failure"
+            echo "RestartSec=5s"
+            echo "LimitNOFILE=65536"
+            echo ""
+            echo "[Install]"
+            echo "WantedBy=multi-user.target"
+        } > /etc/systemd/system/${SERVICE_NAME}.service
         systemctl daemon-reload
         systemctl enable ${SERVICE_NAME}
     else
-        cat > /etc/init.d/${SERVICE_NAME} <<EOF
-#!/sbin/openrc-run
-description="TUIC Server"
-command="${BIN}"
-command_args="-c ${CONF}"
-command_background=true
-pidfile="/run/\${RC_SVCNAME}.pid"
-output_log="/var/log/tuic.log"
-error_log="/var/log/tuic.log"
-EOF
+        {
+            echo "#!/sbin/openrc-run"
+            echo "description=\"TUIC Server\""
+            echo "command=\"${BIN}\""
+            echo "command_args=\"-c ${CONF}\""
+            echo "command_background=true"
+            echo "pidfile=\"/run/\${RC_SVCNAME}.pid\""
+            echo "output_log=\"/var/log/tuic.log\""
+            echo "error_log=\"/var/log/tuic.log\""
+        } > /etc/init.d/${SERVICE_NAME}
         chmod +x /etc/init.d/${SERVICE_NAME}
         rc-update add ${SERVICE_NAME} default
     fi
@@ -224,13 +240,13 @@ EOF
 # 卸载
 uninstall_tuic() {
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl stop ${SERVICE_NAME} 2>/dev/null || true
+        systemctl stop    ${SERVICE_NAME} 2>/dev/null || true
         systemctl disable ${SERVICE_NAME} 2>/dev/null || true
         rm -f /etc/systemd/system/${SERVICE_NAME}.service
         systemctl daemon-reload
     else
         rc-service ${SERVICE_NAME} stop 2>/dev/null || true
-        rc-update del ${SERVICE_NAME} 2>/dev/null || true
+        rc-update del ${SERVICE_NAME}   2>/dev/null || true
         rm -f /etc/init.d/${SERVICE_NAME}
     fi
     rm -rf "$WORK_DIR"
@@ -246,9 +262,9 @@ echo "3. 修改端口"
 echo "4. 卸载"
 read -p "选择: " choice
 case $choice in
-    1) install_tuic ;;
-    2) show_info ;;
-    3) change_port ;;
+    1) install_tuic   ;;
+    2) show_info      ;;
+    3) change_port    ;;
     4) uninstall_tuic ;;
-    *) exit 0 ;;
+    *) exit 0         ;;
 esac
