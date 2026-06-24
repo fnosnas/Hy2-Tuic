@@ -9,6 +9,7 @@ BIN="/usr/local/bin/hysteria"
 CONF="$WORKDIR/config.yaml"
 PORT_FILE="$WORKDIR/port.txt"
 PASS_FILE="$WORKDIR/password.txt"
+SHA256_FILE="$WORKDIR/sha256.txt"
 ### =====================
 
 GREEN='\e[32m'
@@ -45,21 +46,32 @@ show_info() {
     fi
     PORT=$(grep "listen:" "$CONF" | sed 's/.*://' | tr -d ' ')
     PASSWORD=$(grep "password:" "$CONF" | awk -F'"' '{print $2}')
+    SHA256=""
+    [ -f "$SHA256_FILE" ] && SHA256=$(cat "$SHA256_FILE")
     echo -e "${YELLOW}正在检测公网 IP 地址...${NC}"
     IP4=$(curl -s4 --connect-timeout 5 ip.sb || curl -s4 --connect-timeout 5 ifconfig.me || echo "")
     IP6=$(curl -s6 --connect-timeout 5 ip.sb || curl -s6 --connect-timeout 5 ifconfig.me || echo "")
     echo -e "\n${GREEN}========== Hysteria2 配置信息 ==========${NC}"
-    echo -e "📌 IPv4地址: ${YELLOW}$IP4${NC}"
-    echo -e "📌 IPv6地址: ${YELLOW}$IP6${NC}"
-    echo -e "🎲 监听端口: ${YELLOW}$PORT${NC}"
-    echo -e "🔐 认证密码: ${YELLOW}$PASSWORD${NC}"
+    echo -e "📌 IPv4地址:   ${YELLOW}$IP4${NC}"
+    echo -e "📌 IPv6地址:   ${YELLOW}$IP6${NC}"
+    echo -e "🎲 监听端口:   ${YELLOW}$PORT${NC}"
+    echo -e "🔐 认证密码:   ${YELLOW}$PASSWORD${NC}"
+    [ -n "$SHA256" ] && echo -e "🔏 证书SHA256: ${YELLOW}$SHA256${NC}"
     if [[ -n "$IP4" ]]; then
-        echo -e "\n${GREEN}📎 节点链接 (IPv4):${NC}"
+        echo -e "\n${GREEN}📎 节点链接 IPv4 (跳过验证):${NC}"
         echo -e "${YELLOW}hy2://$PASSWORD@$IP4:$PORT/?sni=$SERVER_NAME&alpn=h3&insecure=1#${TAG}_V4${NC}"
+        if [[ -n "$SHA256" ]]; then
+            echo -e "${GREEN}📎 节点链接 IPv4 (SHA256校验):${NC}"
+            echo -e "${YELLOW}hy2://$PASSWORD@$IP4:$PORT/?sni=$SERVER_NAME&alpn=h3&pinSHA256=$SHA256#${TAG}_V4_SHA256${NC}"
+        fi
     fi
     if [[ -n "$IP6" ]]; then
-        echo -e "\n${GREEN}📎 节点链接 (IPv6):${NC}"
+        echo -e "\n${GREEN}📎 节点链接 IPv6 (跳过验证):${NC}"
         echo -e "${YELLOW}hy2://$PASSWORD@[$IP6]:$PORT/?sni=$SERVER_NAME&alpn=h3&insecure=1#${TAG}_V6${NC}"
+        if [[ -n "$SHA256" ]]; then
+            echo -e "${GREEN}📎 节点链接 IPv6 (SHA256校验):${NC}"
+            echo -e "${YELLOW}hy2://$PASSWORD@[$IP6]:$PORT/?sni=$SERVER_NAME&alpn=h3&pinSHA256=$SHA256#${TAG}_V6_SHA256${NC}"
+        fi
     fi
     echo -e "${GREEN}=======================================${NC}\n"
 }
@@ -85,56 +97,70 @@ install_hy2() {
     mkdir -p "$WORKDIR"
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64) FILE="hysteria-linux-amd64" ;;
-        aarch64|arm64) FILE="hysteria-linux-arm64" ;;
-        *) echo "❌ 不支持架构"; exit 1 ;;
+        x86_64)        FILE="hysteria-linux-amd64"  ;;
+        aarch64|arm64) FILE="hysteria-linux-arm64"  ;;
+        *)             echo "❌ 不支持架构"; exit 1 ;;
     esac
     curl -L -o "$BIN" "https://github.com/apernet/hysteria/releases/latest/download/$FILE"
     chmod +x "$BIN"
     PASSWORD=$(openssl rand -hex 4)
     PORT=$(( ( RANDOM % 50000 ) + 10000 ))
     echo "$PASSWORD" > "$PASS_FILE"
-    echo "$PORT" > "$PORT_FILE"
-    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$WORKDIR/key.pem" -out "$WORKDIR/cert.pem" -days 3650 -subj "/CN=$SERVER_NAME"
-    cat > "$CONF" <<EOF
-listen: :$PORT
-tls:
-  cert: $WORKDIR/cert.pem
-  key: $WORKDIR/key.pem
-  alpn:
-    - h3
-auth:
-  type: password
-  password: "$PASSWORD"
-masquerade:
-  type: proxy
-  proxy:
-    url: https://www.bing.com
-    rewriteHost: true
-EOF
+    echo "$PORT"     > "$PORT_FILE"
+
+    # 生成自签证书
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "$WORKDIR/key.pem" \
+        -out    "$WORKDIR/cert.pem" \
+        -days 3650 \
+        -subj "/CN=$SERVER_NAME" 2>/dev/null
+
+    # 提取 SHA256 指纹（去冒号、转小写，供 v2rayN pinSHA256 使用）
+    SHA256=$(openssl x509 -noout -fingerprint -sha256 -in "$WORKDIR/cert.pem" 2>/dev/null \
+             | sed 's/.*=//;s/://g' | tr '[:upper:]' '[:lower:]')
+    echo "$SHA256" > "$SHA256_FILE"
+
+    # 写 Hysteria2 配置
+    {
+        echo "listen: :$PORT"
+        echo "tls:"
+        echo "  cert: $WORKDIR/cert.pem"
+        echo "  key: $WORKDIR/key.pem"
+        echo "  alpn:"
+        echo "    - h3"
+        echo "auth:"
+        echo "  type: password"
+        echo "  password: \"$PASSWORD\""
+        echo "masquerade:"
+        echo "  type: proxy"
+        echo "  proxy:"
+        echo "    url: https://www.bing.com"
+        echo "    rewriteHost: true"
+    } > "$CONF"
+
     if [ "$OS" = "alpine" ]; then
-        cat > /etc/init.d/hysteria <<EOF
-#!/sbin/openrc-run
-name="hysteria"
-command="$BIN"
-command_args="server -c $CONF"
-command_background=true
-pidfile="/run/hysteria.pid"
-supervisor="supervise-daemon"
-EOF
+        {
+            echo '#!/sbin/openrc-run'
+            echo 'name="hysteria"'
+            echo "command=\"$BIN\""
+            echo "command_args=\"server -c $CONF\""
+            echo 'command_background=true'
+            echo 'pidfile="/run/hysteria.pid"'
+            echo 'supervisor="supervise-daemon"'
+        } > /etc/init.d/hysteria
         chmod +x /etc/init.d/hysteria
         rc-update add hysteria default
     else
-        cat > /etc/systemd/system/hysteria.service <<EOF
-[Unit]
-Description=Hysteria2
-After=network.target
-[Service]
-ExecStart=$BIN server -c $CONF
-Restart=always
-[Install]
-WantedBy=multi-user.target
-EOF
+        {
+            echo '[Unit]'
+            echo 'Description=Hysteria2'
+            echo 'After=network.target'
+            echo '[Service]'
+            echo "ExecStart=$BIN server -c $CONF"
+            echo 'Restart=always'
+            echo '[Install]'
+            echo 'WantedBy=multi-user.target'
+        } > /etc/systemd/system/hysteria.service
         systemctl daemon-reload
         systemctl enable hysteria
     fi
@@ -152,20 +178,20 @@ echo "4. 卸载"
 read -p "选择: " choice
 case $choice in
     1) install_hy2 ;;
-    2) show_info ;;
+    2) show_info   ;;
     3) change_port ;;
-    4) 
+    4)
         if [ "$OS" = "alpine" ]; then
-            rc-service hysteria stop || true
-            rc-update del hysteria || true
+            rc-service hysteria stop  || true
+            rc-update del hysteria    || true
             rm -f /etc/init.d/hysteria
         else
-            systemctl stop hysteria || true
+            systemctl stop    hysteria || true
             systemctl disable hysteria || true
             rm -f /etc/systemd/system/hysteria.service
         fi
         rm -rf "$WORKDIR" "$BIN"
-        echo "已卸载" 
+        echo "已卸载"
         ;;
     *) exit 0 ;;
 esac
