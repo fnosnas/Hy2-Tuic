@@ -17,10 +17,10 @@ HY2 (自签证书SHA256指纹)
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/hy2.sh)
 ```
-Socks5
+Socks5 (无认证/有认证)
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Socks5.sh)
 ```
-http无认证
+http (无认证/有认证)
 ```
 bash <(curl -sL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/http.sh)
