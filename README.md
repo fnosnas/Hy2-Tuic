@@ -13,7 +13,7 @@ VLESS 直连
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/VLESS/vless.sh)
 ```
-HY2
+HY2 (自签证书SHA256指纹)
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/hy2.sh)
 ```
