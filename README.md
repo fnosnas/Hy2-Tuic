@@ -5,7 +5,7 @@ Argo隧道(自签证书SHA256指纹)
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/argo.sh)
 ```
-tuic
+tuic (自签证书SHA256指纹)
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Tuic/tuic.sh)
 ```
