@@ -57,10 +57,10 @@ restart_service() {
 # 安装依赖
 install_deps() {
     if [ "$OS" = "alpine" ]; then
-        apk add --no-cache curl openssl ca-certificates bash unzip wget jq 2>/dev/null || true
+        apk add --no-cache curl openssl ca-certificates bash unzip wget jq file 2>/dev/null || true
     else
         apt-get update -qq
-        apt-get install -y -qq curl openssl ca-certificates unzip wget jq 2>/dev/null || true
+        apt-get install -y -qq curl openssl ca-certificates unzip wget jq file 2>/dev/null || true
     fi
 }
 
@@ -131,14 +131,37 @@ change_port() {
 
 # 安装 Xray
 install_xray() {
-    echo -e "${CYAN}⬇️  正在下载 Xray...${NC}"
-    XRAY_VER=$(curl -s "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | \
-               grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
-    [[ -z "$XRAY_VER" ]] && XRAY_VER="v25.4.30"
+    echo -e "${CYAN}⬇️  正在获取 Xray 最新版本号...${NC}"
+
+    # ---- 修复点 1：用 jq 精确解析 tag_name，不再用容易出错的 grep/sed 管道 ----
+    XRAY_VER=$(curl -sf "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | jq -r '.tag_name' 2>/dev/null || true)
+
+    # ---- 修复点 2：去掉写死的过时保底版本号，获取失败就直接报错退出 ----
+    if [[ -z "$XRAY_VER" || "$XRAY_VER" == "null" ]]; then
+        echo -e "${RED}❌ 无法获取 Xray 最新版本号，请检查网络（能否访问 api.github.com）或稍后重试${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✅ 最新版本: $XRAY_VER${NC}"
 
     XRAY_ZIP="Xray-linux-${ARCH_XRAY}.zip"
-    curl -L -o /tmp/xray.zip \
-        "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/${XRAY_ZIP}"
+    DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/${XRAY_ZIP}"
+
+    echo -e "${CYAN}⬇️  正在下载 Xray ($XRAY_ZIP)...${NC}"
+
+    # ---- 修复点 3：curl 加 -f，HTTP 4xx/5xx 直接失败，不会把错误页面当正常文件保存 ----
+    if ! curl -Lf -o /tmp/xray.zip "$DOWNLOAD_URL"; then
+        echo -e "${RED}❌ 下载失败: $DOWNLOAD_URL${NC}"
+        echo -e "${RED}   请检查该版本/架构对应的资源是否存在${NC}"
+        exit 1
+    fi
+
+    # ---- 修复点 4：下载后校验文件类型，确认确实是 zip，而不是错误页面 ----
+    if ! file /tmp/xray.zip | grep -q "Zip archive"; then
+        echo -e "${RED}❌ 下载的文件不是有效的 zip 包，可能是链接失效或网络异常${NC}"
+        rm -f /tmp/xray.zip
+        exit 1
+    fi
+
     unzip -o /tmp/xray.zip xray -d /tmp/
     mv /tmp/xray "$XRAY_BIN"
     chmod +x "$XRAY_BIN"
@@ -148,8 +171,11 @@ install_xray() {
 # 安装 cloudflared
 install_cloudflared() {
     echo -e "${CYAN}⬇️  正在下载 cloudflared...${NC}"
-    curl -L -o "$ARGO_BIN" \
-        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH_ARGO}"
+    if ! curl -Lf -o "$ARGO_BIN" \
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH_ARGO}"; then
+        echo -e "${RED}❌ cloudflared 下载失败，请检查网络${NC}"
+        exit 1
+    fi
     chmod +x "$ARGO_BIN"
 }
 
