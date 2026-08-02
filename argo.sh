@@ -160,8 +160,9 @@ install_xray() {
             continue
         fi
 
-        # ---- 基础校验：文件类型必须是 zip，不是错误页面 ----
-        if ! file /tmp/xray.zip | grep -q "Zip archive"; then
+        # ---- 基础校验：用 unzip -t 实际解析并 CRC 校验 zip 结构，比 file 命令的魔数猜测更可靠 ----
+        # （精简容器/Alpine 环境里 file 命令的 magic 数据库经常缺失或不完整，会把正常 zip 误判为无效）
+        if ! unzip -t /tmp/xray.zip >/dev/null 2>&1; then
             echo -e "${YELLOW}   ⚠️ 下载内容不是有效 zip（可能是网络传输损坏），重试${NC}"
             rm -f /tmp/xray.zip
             continue
@@ -213,8 +214,10 @@ install_cloudflared() {
             continue
         fi
 
-        # ---- 校验下载内容确实是可执行文件（ELF），不是错误页面/传输损坏的内容 ----
-        if ! file "$ARGO_BIN" | grep -q "ELF"; then
+        # ---- 校验下载内容确实是可执行文件（ELF）：直接读文件头魔数 7f454c46，不依赖 file 命令 ----
+        # （精简容器/Alpine 环境里 file 命令的 magic 数据库经常缺失或不完整，会误判正常文件）
+        MAGIC=$(head -c4 "$ARGO_BIN" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+        if [[ "$MAGIC" != "7f454c46" ]]; then
             echo -e "${YELLOW}   ⚠️ 下载内容不是有效可执行文件（可能传输损坏），重试${NC}"
             rm -f "$ARGO_BIN"
             continue
