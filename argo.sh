@@ -424,18 +424,28 @@ uninstall_argo() {
     echo -e "${GREEN}✅ 卸载完成${NC}"
 }
 
+# 按任意键返回主菜单
+pause_return() {
+    echo -e "\n${CYAN}按任意键返回主菜单...${NC}"
+    read -n 1 -s -r
+}
+
 # ========== 菜单 ==========
-clear
-echo -e "${GREEN}Argo 隧道管理脚本${NC}"
-echo "1. 安装 Argo"
-echo "2. 查看信息"
-echo "3. 修改端口"
-echo "4. 卸载"
-read -p "选择: " choice
-case $choice in
-    1) install_argo ;;
-    2) show_info    ;;
-    3) change_port  ;;
-    4) uninstall_argo ;;
-    *) exit 0 ;;
-esac
+while true; do
+    clear
+    echo -e "${GREEN}Argo 隧道管理脚本${NC}"
+    echo "1. 安装 Argo"
+    echo "2. 查看信息"
+    echo "3. 修改端口"
+    echo "4. 卸载"
+    echo "0. 退出脚本"
+    read -p "选择: " choice
+    case $choice in
+        1) install_argo ; pause_return ;;
+        2) show_info    ; pause_return ;;
+        3) change_port  ; pause_return ;;
+        4) uninstall_argo ; pause_return ;;
+        0) echo -e "${GREEN}已退出脚本${NC}"; exit 0 ;;
+        *) echo -e "${RED}无效选择${NC}"; pause_return ;;
+    esac
+done
