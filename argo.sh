@@ -134,7 +134,7 @@ install_xray() {
     echo -e "${CYAN}⬇️  正在获取 Xray 最新版本号...${NC}"
 
     # ---- 修复点 1：用 jq 精确解析 tag_name，不再用容易出错的 grep/sed 管道 ----
-    XRAY_VER=$(curl -sf "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | jq -r '.tag_name' 2>/dev/null || true)
+    XRAY_VER=$(curl -4 -sf "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | jq -r '.tag_name' 2>/dev/null || true)
 
     # ---- 修复点 2：去掉写死的过时保底版本号，获取失败就直接报错退出 ----
     if [[ -z "$XRAY_VER" || "$XRAY_VER" == "null" ]]; then
@@ -145,20 +145,49 @@ install_xray() {
 
     XRAY_ZIP="Xray-linux-${ARCH_XRAY}.zip"
     DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/${XRAY_ZIP}"
+    DGST_URL="${DOWNLOAD_URL}.dgst"
 
     echo -e "${CYAN}⬇️  正在下载 Xray ($XRAY_ZIP)...${NC}"
 
-    # ---- 修复点 3：curl 加 -f，HTTP 4xx/5xx 直接失败，不会把错误页面当正常文件保存 ----
-    if ! curl -Lf -o /tmp/xray.zip "$DOWNLOAD_URL"; then
-        echo -e "${RED}❌ 下载失败: $DOWNLOAD_URL${NC}"
-        echo -e "${RED}   请检查该版本/架构对应的资源是否存在${NC}"
-        exit 1
-    fi
+    local OK="" attempt
+    for attempt in 1 2 3; do
+        [[ $attempt -gt 1 ]] && echo -e "${YELLOW}   ⚠️ 第 $attempt 次尝试...${NC}"
 
-    # ---- 修复点 4：下载后校验文件类型，确认确实是 zip，而不是错误页面 ----
-    if ! file /tmp/xray.zip | grep -q "Zip archive"; then
-        echo -e "${RED}❌ 下载的文件不是有效的 zip 包，可能是链接失效或网络异常${NC}"
-        rm -f /tmp/xray.zip
+        # ---- 强制 IPv4：VPS 的 IPv6 线路到 GitHub CDN 不稳定是导致文件损坏的常见原因 ----
+        if ! curl -4 -Lf --retry 2 --retry-delay 2 --connect-timeout 10 -o /tmp/xray.zip "$DOWNLOAD_URL"; then
+            echo -e "${YELLOW}   ⚠️ 下载请求失败，重试${NC}"
+            rm -f /tmp/xray.zip
+            continue
+        fi
+
+        # ---- 基础校验：文件类型必须是 zip，不是错误页面 ----
+        if ! file /tmp/xray.zip | grep -q "Zip archive"; then
+            echo -e "${YELLOW}   ⚠️ 下载内容不是有效 zip（可能是网络传输损坏），重试${NC}"
+            rm -f /tmp/xray.zip
+            continue
+        fi
+
+        # ---- 官方 SHA256 校验：确认文件内容完整无损，不仅仅是"看起来像zip" ----
+        EXPECTED_SHA256=$(curl -4 -sf "$DGST_URL" 2>/dev/null | grep -i '^SHA256=' | awk -F'= ' '{print $2}' | head -1)
+        if [[ -n "$EXPECTED_SHA256" ]]; then
+            ACTUAL_SHA256=$(sha256sum /tmp/xray.zip | awk '{print $1}')
+            if [[ "${EXPECTED_SHA256,,}" != "${ACTUAL_SHA256,,}" ]]; then
+                echo -e "${YELLOW}   ⚠️ SHA256 校验不一致（文件在传输中损坏），重试${NC}"
+                rm -f /tmp/xray.zip
+                continue
+            fi
+            echo -e "${GREEN}   ✅ SHA256 校验通过${NC}"
+        else
+            echo -e "${YELLOW}   ⚠️ 未能获取官方校验文件，跳过哈希校验（仅做了 zip 格式校验）${NC}"
+        fi
+
+        OK="1"
+        break
+    done
+
+    if [[ -z "$OK" ]]; then
+        echo -e "${RED}❌ 多次尝试后仍下载失败/文件损坏，Xray 安装终止${NC}"
+        echo -e "${RED}   建议：1) 稍后重试  2) 检查 VPS 的 IPv6 网络是否正常（可尝试 curl -6 -I https://github.com 测试）${NC}"
         exit 1
     fi
 
@@ -171,11 +200,36 @@ install_xray() {
 # 安装 cloudflared
 install_cloudflared() {
     echo -e "${CYAN}⬇️  正在下载 cloudflared...${NC}"
-    if ! curl -Lf -o "$ARGO_BIN" \
-        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH_ARGO}"; then
-        echo -e "${RED}❌ cloudflared 下载失败，请检查网络${NC}"
+    local CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH_ARGO}"
+
+    local OK="" attempt
+    for attempt in 1 2 3; do
+        [[ $attempt -gt 1 ]] && echo -e "${YELLOW}   ⚠️ 第 $attempt 次尝试...${NC}"
+
+        # ---- 强制 IPv4：VPS 的 IPv6 线路不稳定是文件下载损坏的常见原因 ----
+        if ! curl -4 -Lf --retry 2 --retry-delay 2 --connect-timeout 10 -o "$ARGO_BIN" "$CF_URL"; then
+            echo -e "${YELLOW}   ⚠️ 下载请求失败，重试${NC}"
+            rm -f "$ARGO_BIN"
+            continue
+        fi
+
+        # ---- 校验下载内容确实是可执行文件（ELF），不是错误页面/传输损坏的内容 ----
+        if ! file "$ARGO_BIN" | grep -q "ELF"; then
+            echo -e "${YELLOW}   ⚠️ 下载内容不是有效可执行文件（可能传输损坏），重试${NC}"
+            rm -f "$ARGO_BIN"
+            continue
+        fi
+
+        OK="1"
+        break
+    done
+
+    if [[ -z "$OK" ]]; then
+        echo -e "${RED}❌ 多次尝试后仍下载失败/文件损坏，cloudflared 安装终止${NC}"
+        echo -e "${RED}   建议：1) 稍后重试  2) 检查 VPS 的 IPv6 网络是否正常（可尝试 curl -6 -I https://github.com 测试）${NC}"
         exit 1
     fi
+
     chmod +x "$ARGO_BIN"
 }
 
