@@ -214,10 +214,9 @@ install_cloudflared() {
             continue
         fi
 
-        # ---- 校验下载内容确实是可执行文件（ELF）：直接读文件头魔数 7f454c46，不依赖 file 命令 ----
-        # （精简容器/Alpine 环境里 file 命令的 magic 数据库经常缺失或不完整，会误判正常文件）
-        MAGIC=$(head -c4 "$ARGO_BIN" 2>/dev/null | od -An -tx1 | tr -d ' \n')
-        if [[ "$MAGIC" != "7f454c46" ]]; then
+        # ---- 校验下载内容确实是可执行文件（ELF）：纯 bash 内置比较文件头魔数，不依赖 file/od 等外部命令 ----
+        # （不同系统上 od/file 的实现和参数支持差异较大，bash 内置字符串比较三系统通用、零依赖）
+        if [[ "$(head -c4 "$ARGO_BIN")" != $'\x7fELF' ]]; then
             echo -e "${YELLOW}   ⚠️ 下载内容不是有效可执行文件（可能传输损坏），重试${NC}"
             rm -f "$ARGO_BIN"
             continue
@@ -333,14 +332,16 @@ get_temp_domain() {
     echo -e "${CYAN}⏳ 等待 Argo 临时域名生成（最多60秒）...${NC}"
     for i in $(seq 1 30); do
         sleep 2
-        DOMAIN=$(grep -oP 'https://\K[a-zA-Z0-9\-]+\.trycloudflare\.com' "$WORKDIR/argo.log" 2>/dev/null | head -1 || true)
+        # 用 -oE（扩展正则）+ sed 去前缀，busybox grep（Alpine）和 GNU grep（Debian/Ubuntu）都支持，
+        # 不用 -oP + \K（Perl正则），因为 Alpine 默认 grep 不支持 -P，会静默失败
+        DOMAIN=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$WORKDIR/argo.log" 2>/dev/null | sed 's#https://##' | head -1 || true)
         if [[ -n "$DOMAIN" ]]; then
             echo -e "${GREEN}✅ 临时域名: $DOMAIN${NC}"
             return 0
         fi
     done
     # 再尝试一次长超时
-    DOMAIN=$(grep -oP 'https://\K[a-zA-Z0-9\-]+\.trycloudflare\.com' "$WORKDIR/argo.log" 2>/dev/null | head -1 || true)
+    DOMAIN=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$WORKDIR/argo.log" 2>/dev/null | sed 's#https://##' | head -1 || true)
     if [[ -z "$DOMAIN" ]]; then
         echo -e "${RED}⚠️  未能自动获取临时域名，请查看日志: $WORKDIR/argo.log${NC}"
         DOMAIN="<临时域名未获取，请手动查看日志>"
