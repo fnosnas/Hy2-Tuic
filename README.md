@@ -3,21 +3,21 @@
 # 🚀 VPS运行以下脚本   (端口转发小鸡安装用容器端口，连接用访问端口)
 Argo隧道(自签证书SHA256指纹) 
 ```
-bash <(curl -fsSL https://ae86.ccwu.cc/argo)
+bash <(curl -fsSL ae86.ccwu.cc/argo)
 ```
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/argo.sh)
 ```
 tuic (自签证书SHA256指纹)
 ```
-bash <(curl -fsSL https://ae86.ccwu.cc/Tuic)
+bash <(curl -fsSL ae86.ccwu.cc/Tuic)
 ```
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Tuic.sh)
 ```
 VLESS 直连
 ```
-bash <(curl -fsSL https://ae86.ccwu.cc/vless)
+bash <(curl -fsSL ae86.ccwu.cc/vless)
 ```
 ```
 bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/vless.sh)
