@@ -10,10 +10,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/argo.s
 ```
 tuic (自签证书SHA256指纹)
 ```
-bash <(curl -fsSL https://ae86.ccwu.cc/tuic)
+bash <(curl -fsSL https://ae86.ccwu.cc/Tuic)
 ```
 ```
-bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/tuic.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/fnosnas/Hy2-Tuic/main/Tuic.sh)
 ```
 VLESS 直连
 ```
